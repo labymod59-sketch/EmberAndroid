@@ -1,0 +1,122 @@
+# Builds Ember for Android (arm64-v8a, e.g. Redmi Note 14 Pro 4G).
+#
+# 1. builds TDLib (Telegram's official library) from source, once, and caches it;
+# 2. builds the app and uploads app-release.apk as an artifact.
+#
+# Required secrets (Settings -> Secrets and variables -> Actions):
+#   EMBER_API_ID, EMBER_API_HASH   from https://my.telegram.org/apps
+
+name: Build Ember Android
+
+on:
+  workflow_dispatch:
+    inputs:
+      rebuild_tdlib:
+        description: "Rebuild TDLib even if cached"
+        type: boolean
+        default: false
+  push:
+    tags:
+      - "android-v*"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      EMBER_API_ID: ${{ secrets.EMBER_API_ID }}
+      EMBER_API_HASH: ${{ secrets.EMBER_API_HASH }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check secrets
+        run: |
+          if [ -z "$EMBER_API_ID" ] || [ -z "$EMBER_API_HASH" ]; then
+            echo "::error::Add the secrets EMBER_API_ID and EMBER_API_HASH (see TUTORIAL.md)."
+            exit 1
+          fi
+
+      - name: Restore TDLib cache
+        id: tdcache
+        if: ${{ !inputs.rebuild_tdlib }}
+        uses: actions/cache@v4
+        with:
+          path: tdlib-out
+          key: tdlib-android-arm64-v1
+
+      - name: Install tools for TDLib
+        if: steps.tdcache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gperf cmake make php-cli zlib1g-dev unzip zip perl
+
+      - name: Build TDLib (long, only on the first run)
+        if: steps.tdcache.outputs.cache-hit != 'true'
+        run: |
+          set -e
+          WS="$GITHUB_WORKSPACE"
+          git clone --depth 1 https://github.com/tdlib/td.git "$RUNNER_TEMP/td"
+          cd "$RUNNER_TEMP/td/example/android"
+
+          NDK_VER=$(ls "$ANDROID_SDK_ROOT/ndk" | sort -V | tail -1)
+          echo "SDK: $ANDROID_SDK_ROOT"
+          echo "NDK: $NDK_VER"
+          echo "----- scripts -----"
+          ls
+          head -25 build-openssl.sh
+          head -25 build-tdlib.sh
+
+          # arm64 only: the phone is arm64, and it is 4x faster
+          sed -i 's/for ABI in .*; do/for ABI in arm64-v8a; do/' build-openssl.sh build-tdlib.sh || true
+
+          ./build-openssl.sh "$ANDROID_SDK_ROOT" "$NDK_VER" openssl
+          ./build-tdlib.sh   "$ANDROID_SDK_ROOT" "$NDK_VER" openssl
+
+          mkdir -p "$WS/tdlib-out/jni/arm64-v8a" "$WS/tdlib-out/java/org/drinkless/tdlib"
+          SO=$(find . -path '*arm64-v8a*' -name 'libtdjni.so' | head -1)
+          CL=$(find . -path '*org/drinkless/tdlib*' -name 'Client.java' | head -1)
+          TA=$(find . -path '*org/drinkless/tdlib*' -name 'TdApi.java' | head -1)
+          echo "so=$SO client=$CL api=$TA"
+          test -n "$SO" && test -n "$CL" && test -n "$TA"
+          cp "$SO" "$WS/tdlib-out/jni/arm64-v8a/libtdjni.so"
+          cp "$CL" "$TA" "$WS/tdlib-out/java/org/drinkless/tdlib/"
+          STRIP="$ANDROID_SDK_ROOT/ndk/$NDK_VER/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+          [ -x "$STRIP" ] && "$STRIP" "$WS/tdlib-out/jni/arm64-v8a/libtdjni.so" || true
+          ls -la "$WS/tdlib-out/jni/arm64-v8a"
+
+      - name: Put TDLib into the app
+        run: |
+          mkdir -p app/src/main/jniLibs/arm64-v8a app/src/main/java/org/drinkless/tdlib
+          cp tdlib-out/jni/arm64-v8a/libtdjni.so app/src/main/jniLibs/arm64-v8a/
+          cp tdlib-out/java/org/drinkless/tdlib/*.java app/src/main/java/org/drinkless/tdlib/
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
+      - name: Build APK
+        run: gradle :app:assembleRelease --no-daemon --stacktrace
+
+      - name: Collect APK
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/release/*.apk dist/Ember.apk
+          ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Ember-android
+          path: dist/Ember.apk
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/android-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/Ember.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
