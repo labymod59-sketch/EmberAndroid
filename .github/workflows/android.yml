@@ -24,8 +24,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
-      EMBER_API_ID: ${{ secrets.EMBER_API_ID }}
-      EMBER_API_HASH: ${{ secrets.EMBER_API_HASH }}
+      # >>> ЗДЕСЬ ключи Telegram. Замени числа/строку в кавычках на свои новые.
+      # Если в Settings -> Secrets созданы EMBER_API_ID / EMBER_API_HASH, они главнее этих значений.
+      EMBER_API_ID: ${{ secrets.EMBER_API_ID || '35496838' }}
+      EMBER_API_HASH: ${{ secrets.EMBER_API_HASH || '5a1d93f4c8329f9dc7f5268aff0344e7' }}
     steps:
       - uses: actions/checkout@v4
 
